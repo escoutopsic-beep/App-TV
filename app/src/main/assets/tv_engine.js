@@ -94,7 +94,7 @@
         a = r.width * r.height;
         if (a > bestArea) { bestArea = a; best = v; }
       }
-      return best;
+      return best || vs[0] || null;
     }
     A.pickVideo = pickVideo;
 
@@ -277,6 +277,7 @@
           for (i = 0; i < at.length; i++) at[i].enabled = i === value;
         }
       } else if (key === 'quality') {
+        v.__fxManualQ = true;
         if (src === 'jw' && jw) jw.setCurrentQuality(value);
         else if (src === 'hls' && hl) hl.currentLevel = value;
         else if (src === 'vjs' && vj && vj.qualityLevels) {
@@ -312,8 +313,73 @@
       return v;
     }
 
+    /* ---- Always-highest quality (setting "maxQuality"; a manual choice in the menu wins) ---- */
+    var initCfg = window.__FXTV_CFG || {};
+    A.maxQuality = initCfg.maxQuality !== false;
+
+    function levelScore(q) {
+      var h = q.height || 0;
+      if (!h) {
+        var m = String(q.label || '').match(/(\d{3,4})\s*p/i);
+        if (m) h = +m[1];
+        else if (/4k|uhd|2160/i.test(String(q.label || ''))) h = 2160;
+      }
+      return h * 1e7 + (q.bitrate || 0);
+    }
+
+    function bestIndex(list, skipAuto) {
+      var best = -1, bs = -1, i, sc;
+      for (i = 0; i < list.length; i++) {
+        if (skipAuto && /auto/i.test(String(list[i].label || ''))) continue;
+        sc = levelScore(list[i]);
+        if (sc > bs) { bs = sc; best = i; }
+      }
+      return best;
+    }
+
+    function applyMaxQuality(v) {
+      if (!A.maxQuality || !v || v.__fxManualQ) return;
+      var jw = jwFor(v), hl = hlsFor(v), vj = vjsFor(v), best, i;
+      try {
+        if (jw && jw.getQualityLevels) {
+          var list = jw.getQualityLevels() || [];
+          best = bestIndex(list, true);
+          if (best >= 0 && jw.getCurrentQuality() !== best) jw.setCurrentQuality(best);
+        } else if (hl && hl.levels && hl.levels.length > 1) {
+          best = bestIndex(hl.levels, false);
+          if (best >= 0 && (hl.autoLevelEnabled || hl.currentLevel !== best)) {
+            hl.autoLevelCapping = -1;
+            hl.nextLevel = best; // switches at the next segment, without stopping playback
+          }
+        } else if (vj && vj.qualityLevels) {
+          var ql = vj.qualityLevels(), arrQ = [];
+          for (i = 0; i < ql.length; i++) arrQ.push(ql[i]);
+          best = bestIndex(arrQ, false);
+          if (best >= 0) for (i = 0; i < ql.length; i++) ql[i].enabled = i === best;
+        }
+      } catch (e) {}
+    }
+
+    function onMediaReady(e) {
+      var v = e.target;
+      if (!v || v.tagName !== 'VIDEO' || !A.maxQuality || v.__fxManualQ) return;
+      applyMaxQuality(v);
+      // Quality lists often arrive a little after playback starts: try again shortly (twice max).
+      if ((v.__fxMaxTries || 0) < 2) {
+        v.__fxMaxTries = (v.__fxMaxTries || 0) + 1;
+        setTimeout(function () { applyMaxQuality(v); }, 2500);
+      }
+    }
+    document.addEventListener('loadedmetadata', onMediaReady, true);
+    document.addEventListener('playing', onMediaReady, true);
+
     function handle(msg) {
       var v;
+      if (msg.op === 'cfg') {
+        A.maxQuality = msg.maxQuality !== false;
+        if (A.maxQuality) applyMaxQuality(pickVideo());
+        return;
+      }
       if (msg.op === 'query') {
         v = mainVideo();
         if (!v) return;

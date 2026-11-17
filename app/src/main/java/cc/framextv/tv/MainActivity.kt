@@ -98,7 +98,7 @@ class MainActivity : Activity() {
     private val hideHudRunnable = Runnable { playerHud.visibility = View.GONE }
 
     companion object {
-        private const val APP_VERSION = "0.7.2"
+        private const val APP_VERSION = "0.7.3"
         private const val HOME_URL = "https://framextv.cc/"
         /** "*" para o agente de player também rodar nos players embutidos (iframes de outros domínios). */
         private val ENGINE_ORIGINS = setOf("*")
@@ -112,6 +112,7 @@ class MainActivity : Activity() {
         private const val KEY_PAGE_SCALE = "page_scale_percent"
         private const val KEY_RESUME_LAST = "resume_last_page"
         private const val KEY_STRICT_SHIELD = "strict_third_party_shield"
+        private const val KEY_MAX_QUALITY = "always_max_quality"
 
         private const val DEFAULT_TEXT_ZOOM = 100
         private const val DEFAULT_PAGE_SCALE = 100
@@ -505,7 +506,8 @@ class MainActivity : Activity() {
 
     private fun engineConfigJs(): String {
         val scale = prefs.getInt(KEY_PAGE_SCALE, DEFAULT_PAGE_SCALE)
-        return "window.__FXTV_CFG={scale:$scale,shield:$shieldEnabled};\n"
+        val maxQ = prefs.getBoolean(KEY_MAX_QUALITY, true)
+        return "window.__FXTV_CFG={scale:$scale,shield:$shieldEnabled,maxQuality:$maxQ};\n"
     }
 
     /** Injeta o motor antes dos scripts do site (sem "piscar" anúncios nem relayout de escala). */
@@ -1090,8 +1092,10 @@ class MainActivity : Activity() {
         val textZoom = prefs.getInt(KEY_TEXT_ZOOM, DEFAULT_TEXT_ZOOM)
         val keepScreen = prefs.getBoolean(KEY_KEEP_SCREEN_ON, false)
         val resumeLast = prefs.getBoolean(KEY_RESUME_LAST, false)
+        val maxQuality = prefs.getBoolean(KEY_MAX_QUALITY, true)
 
         val items = arrayOf(
+            "Qualidade do vídeo: ${if (maxQuality) "sempre a máxima" else "automática"}",
             "Escala da página: $pageScale%",
             "Tamanho do texto: $textZoom%",
             "Bloqueio de anúncios e rastreadores: ${if (shield) "LIGADO" else "desligado"}",
@@ -1101,8 +1105,19 @@ class MainActivity : Activity() {
 
         dialogBuilder()
             .setTitle("Configurações")
-            .setItems(items) { _, index ->
-                when (index) {
+            .setItems(items) { _, idx ->
+                when (val index = idx - 1) {
+                    -1 -> {
+                        val next = !maxQuality
+                        prefs.edit().putBoolean(KEY_MAX_QUALITY, next).apply()
+                        installDocumentStartEngine(webView)
+                        webView.evaluateJavascript(
+                            "window.__fxtvAgent&&window.__fxtvAgent.dispatch({op:'cfg',maxQuality:$next})", null
+                        )
+                        Toast.makeText(
+                            this, "Qualidade do vídeo: ${if (next) "sempre a máxima" else "automática"}", Toast.LENGTH_SHORT
+                        ).show()
+                    }
                     0 -> {
                         val next = nextStep(PAGE_SCALE_STEPS, pageScale)
                         prefs.edit().putInt(KEY_PAGE_SCALE, next).apply()
