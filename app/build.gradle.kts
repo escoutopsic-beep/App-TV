@@ -14,8 +14,8 @@ android {
         applicationId = "cc.framextv.tv"
         minSdk = 23
         targetSdk = 34
-        versionCode = 10
-        versionName = "0.7.3"
+        versionCode = 11
+        versionName = "0.7.4"
     }
 
     signingConfigs {

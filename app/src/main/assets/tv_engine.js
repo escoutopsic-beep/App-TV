@@ -707,14 +707,69 @@
     document.addEventListener(ev, playState, true);
   });
 
+  /* ---------------- FrameXTV clutter: promo bar, install toast, welcome pop-ups ---------------- */
+  // Matched by visible text (the site's CSS class names are generated and change often).
+  var CLEAN_RULES = [
+    { text: 'Like frameXTV', hide: 'aside' },      // "Like frameXTV? ... Buy $XTV" bar above the player
+    { text: 'Install frameXTV', hide: 'fixed' },   // "Install frameXTV / Add to Home screen" toast
+    { text: 'Welcome to frameXTV', click: 'Continue to site' },
+    { text: 'has a new look', click: 'Start exploring' }
+  ];
+
+  function findTextEl(root, text) {
+    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), n;
+    while ((n = w.nextNode())) if (n.nodeValue.indexOf(text) >= 0) return n.parentElement;
+    return null;
+  }
+
+  function fixedAncestor(el) {
+    for (var i = 0; el && el !== document.body && i < 8; i++, el = el.parentElement) {
+      if (getComputedStyle(el).position === 'fixed') return el;
+    }
+    return null;
+  }
+
+  function clickButtonNear(el, label) {
+    for (var i = 0; el && el !== document.body && i < 8; i++, el = el.parentElement) {
+      var bs = el.querySelectorAll('button,a,[role="button"]');
+      for (var j = 0; j < bs.length; j++) {
+        if ((bs[j].textContent || '').indexOf(label) >= 0) { bs[j].click(); return true; }
+      }
+    }
+    return false;
+  }
+
+  function cleanSite(root) {
+    if (!root || root.nodeType !== 1) return;
+    var txt = root.textContent || '';
+    for (var i = 0; i < CLEAN_RULES.length; i++) {
+      var r = CLEAN_RULES[i];
+      if (txt.indexOf(r.text) < 0) continue;
+      var el = findTextEl(root, r.text);
+      if (!el) continue;
+      if (r.hide) {
+        var box = r.hide === 'fixed' ? fixedAncestor(el) : el.closest(r.hide);
+        if (box) box.style.setProperty('display', 'none', 'important');
+      } else if (r.click) {
+        clickButtonNear(el, r.click);
+      }
+    }
+  }
+
   /* ---------------- Boot (needs <body>) ---------------- */
   var pending = [], timer = null;
   function flush() {
     timer = null;
     var nodes = pending;
     pending = [];
-    if (nodes.length > 150) { prep(document.body); }
-    else { for (var i = 0; i < nodes.length; i++) if (nodes[i].isConnected) prep(nodes[i]); }
+    if (nodes.length > 150) { prep(document.body); cleanSite(document.body); }
+    else {
+      for (var i = 0; i < nodes.length; i++) {
+        if (!nodes[i].isConnected) continue;
+        prep(nodes[i]);
+        cleanSite(nodes[i]);
+      }
+    }
   }
 
   fx.boot = function () {
@@ -723,6 +778,7 @@
     if (fx.booted || !document.body) return;
     fx.booted = true;
     prep(document.body);
+    cleanSite(document.body);
 
     new MutationObserver(function (muts) {
       for (var i = 0; i < muts.length; i++) {
