@@ -131,9 +131,10 @@ class MainActivity : Activity() {
             userAgentString = "$userAgentString FrameXTV-TCL/0.3 AndroidTV"
         }
 
-        CookieManager.getInstance().apply {
+        val webViewRef = this
+CookieManager.getInstance().apply {
             setAcceptCookie(true)
-            setAcceptThirdPartyCookies(this@apply, true)
+            setAcceptThirdPartyCookies(webViewRef, true)
         }
 
         webChromeClient = object : WebChromeClient() {
@@ -203,14 +204,9 @@ class MainActivity : Activity() {
                     mainFrameFailed = true
                     loadingIndicator.visibility = View.GONE
                     showMessage(
-                        "Não foi possível carregar o FrameXTV.
-
-" +
-                        "Verifique a ligação Wi-Fi ou cabo de rede da sua TCL.
-" +
-                        "Pressione OK para tentar novamente.
-
-" +
+                        "Não foi possível carregar o FrameXTV.\n\n" +
+                        "Verifique a ligação Wi-Fi ou cabo de rede da sua TCL.\n" +
+                        "Pressione OK para tentar novamente.\n\n" +
                         "Detalhe técnico: ${error.description} (${error.errorCode})"
                     )
                 }
@@ -221,9 +217,7 @@ class MainActivity : Activity() {
                 webView.destroy()
                 webView = createWebView()
                 root.addView(webView, 0, FrameLayout.LayoutParams(-1, -1))
-                showMessage("A memória interna foi otimizada pelo sistema.
-
-Pressione OK para continuar.")
+                showMessage("A memória interna foi otimizada pelo sistema.\n\nPressione OK para continuar.")
                 return true
             }
 
@@ -381,11 +375,8 @@ Pressione OK para continuar.")
                         Toast.makeText(this, "Cache limpo com sucesso.", Toast.LENGTH_SHORT).show()
                     }
                     7 -> showMessage(
-                        "FrameXTV para TCL Google TV (v0.3.0)
-
-" +
-                        "Cliente leve otimizado para televisores com 2 GB de RAM.
-" +
+                        "FrameXTV para TCL Google TV (v0.3.0)\n\n" +
+                        "Cliente leve otimizado para televisores com 2 GB de RAM.\n" +
                         "Dica: Use o botão MENU ou definições do comando para abrir este painel a qualquer momento."
                     )
                 }
@@ -496,13 +487,9 @@ Pressione OK para continuar.")
         val netStatus = if (hasInternet()) "Conectada (Internet ativa)" else "Sem ligação à Internet"
 
         showMessage(
-            "Diagnóstico do Sistema
-
-" +
-            "Rede: $netStatus
-" +
-            "Memória Java App: ${usedMemMb} MB / ${maxMemMb} MB
-" +
+            "Diagnóstico do Sistema\n\n" +
+            "Rede: $netStatus\n" +
+            "Memória Java App: ${usedMemMb} MB / ${maxMemMb} MB\n" +
             "URL Atual: ${webView.url ?: "Nenhuma"}"
         )
     }
@@ -534,9 +521,7 @@ Pressione OK para continuar.")
     }
 
     private fun showMessage(text: String) {
-        messagePanel.text = "$text
-
-[ Pressione OK ]"
+        messagePanel.text = "$text\n\n[ Pressione OK ]"
         messagePanel.visibility = View.VISIBLE
         messagePanel.requestFocus()
     }
