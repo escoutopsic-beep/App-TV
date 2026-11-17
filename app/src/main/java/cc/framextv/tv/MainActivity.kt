@@ -277,10 +277,11 @@ class MainActivity : Activity() {
             userAgentString = "$userAgentString FrameXTV-TCL/0.5 AndroidTV"
         }
 
+        val webViewRef = this
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             // Bloqueia cookies de rastreamento de terceiros para maior privacidade e menos spam
-            setAcceptThirdPartyCookies(this@apply, false)
+            setAcceptThirdPartyCookies(webViewRef, false)
         }
 
         webChromeClient = object : WebChromeClient() {
