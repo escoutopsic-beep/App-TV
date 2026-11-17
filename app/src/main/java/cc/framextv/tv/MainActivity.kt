@@ -98,7 +98,7 @@ class MainActivity : Activity() {
     private val hideHudRunnable = Runnable { playerHud.visibility = View.GONE }
 
     companion object {
-        private const val APP_VERSION = "0.7.4"
+        private const val APP_VERSION = "0.7.5"
         private const val HOME_URL = "https://framextv.cc/"
         /** "*" para o agente de player também rodar nos players embutidos (iframes de outros domínios). */
         private val ENGINE_ORIGINS = setOf("*")

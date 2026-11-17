@@ -712,14 +712,21 @@
   var CLEAN_RULES = [
     { text: 'Like frameXTV', hide: 'aside' },      // "Like frameXTV? ... Buy $XTV" bar above the player
     { text: 'Install frameXTV', hide: 'fixed' },   // "Install frameXTV / Add to Home screen" toast
-    { text: 'Welcome to frameXTV', click: 'Continue to site' },
+    { text: 'Welcome to frame', click: 'Continue to site' },
     { text: 'has a new look', click: 'Start exploring' }
   ];
 
+  /** Smallest element whose text contains `text` (works even when the text is split across spans). */
   function findTextEl(root, text) {
-    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), n;
-    while ((n = w.nextNode())) if (n.nodeValue.indexOf(text) >= 0) return n.parentElement;
-    return null;
+    if ((root.textContent || '').indexOf(text) < 0) return null;
+    var el = root, moved = true;
+    while (moved) {
+      moved = false;
+      for (var c = el.firstElementChild; c; c = c.nextElementSibling) {
+        if ((c.textContent || '').indexOf(text) >= 0) { el = c; moved = true; break; }
+      }
+    }
+    return el;
   }
 
   function fixedAncestor(el) {
@@ -751,7 +758,11 @@
         var box = r.hide === 'fixed' ? fixedAncestor(el) : el.closest(r.hide);
         if (box) box.style.setProperty('display', 'none', 'important');
       } else if (r.click) {
+        var modal = fixedAncestor(el);
+        if (modal) modal.style.setProperty('visibility', 'hidden', 'important');
         clickButtonNear(el, r.click);
+        if (modal) modal.style.setProperty('display', 'none', 'important');
+        if (document.body) document.body.style.removeProperty('overflow');
       }
     }
   }
@@ -803,6 +814,26 @@
     report();
     playState();
   };
+
+  // Pop-ups are caught as soon as they are inserted (before they are painted), not after the
+  // debounced pass, so the welcome box never flashes on screen.
+  var POPUP_TEXTS = ['Welcome to frame', 'has a new look', 'Install frameXTV'];
+  try {
+    new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var added = muts[i].addedNodes;
+        for (var j = 0; j < added.length; j++) {
+          var n = added[j];
+          if (n.nodeType !== 1) continue;
+          var t = n.textContent || '';
+          if (t.length > 20000) continue;
+          for (var k = 0; k < POPUP_TEXTS.length; k++) {
+            if (t.indexOf(POPUP_TEXTS[k]) >= 0) { cleanSite(n.isConnected ? (document.body || n) : n); break; }
+          }
+        }
+      }
+    }).observe(document.documentElement || document, { childList: true, subtree: true });
+  } catch (e) {}
 
   fx.apply(cfg);
   if (document.body) fx.boot();
