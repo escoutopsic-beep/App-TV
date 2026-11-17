@@ -27,6 +27,30 @@
   }
 
   function setupAgent(A) {
+    /* ---- Protection (every frame, before the page's own scripts) ---- */
+    // Pop-ups / pop-unders: window.open becomes a no-op and cannot be restored by the page.
+    var noOpen = function () { return null; };
+    try { Object.defineProperty(window, 'open', { configurable: false, writable: false, value: noOpen }); }
+    catch (e) { try { window.open = noOpen; } catch (e2) {} }
+
+    // Links that leave the site (or the player's own domain) are swallowed before they act.
+    var OWN_HOST = /(^|\.)framextv\.cc$/i;
+    var hereHost = location.hostname;
+    function leavesSite(href) {
+      try {
+        var u = new URL(href, location.href);
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') return true;
+        return !(OWN_HOST.test(u.hostname) || u.hostname === hereHost);
+      } catch (e) { return true; }
+    }
+    document.addEventListener('click', function (e) {
+      var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (!a) return;
+      var raw = a.getAttribute('href') || '';
+      if (raw.charAt(0) === '#' || /^\s*javascript:/i.test(raw)) return;
+      if (leavesSite(a.href)) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true);
+
     // Capture hls.js instances (when the page loads hls.js as a global) to reach audio/quality/subs.
     var HlsRef;
     function patchHls(H) {
@@ -348,6 +372,11 @@
     ':focus{outline:4px solid #d6ad55!important;outline-offset:3px!important;border-radius:6px!important}' +
     'a:focus,button:focus,[tabindex]:focus{background-color:rgba(214,173,85,.14)!important}';
 
+  // Only cheap, tag-bound selectors (ads are mainly cut at the network level).
+  var SHIELD_CSS =
+    'ins.adsbygoogle,iframe[src*="doubleclick"],iframe[src*="/ads/"],iframe[src*="adserver"],' +
+    'iframe[src*="popads"],iframe[id^="google_ads"],div[id^="div-gpt-ad"]{display:none!important}';
+
   function applyStyle() {
     var host = document.head || document.documentElement;
     if (!host) return false;
@@ -357,7 +386,7 @@
       st.id = 'fxtv-style';
       host.appendChild(st);
     }
-    var css = BASE_CSS;
+    var css = BASE_CSS + (fx.cfg.shield ? SHIELD_CSS : '');
     if (st.textContent !== css) st.textContent = css;
     return true;
   }

@@ -21,6 +21,8 @@ import android.view.View
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.JsPromptResult
+import android.webkit.JsResult
 import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
@@ -96,7 +98,7 @@ class MainActivity : Activity() {
     private val hideHudRunnable = Runnable { playerHud.visibility = View.GONE }
 
     companion object {
-        private const val APP_VERSION = "0.7.1"
+        private const val APP_VERSION = "0.7.2"
         private const val HOME_URL = "https://framextv.cc/"
         /** "*" para o agente de player também rodar nos players embutidos (iframes de outros domínios). */
         private val ENGINE_ORIGINS = setOf("*")
@@ -144,7 +146,13 @@ class MainActivity : Activity() {
             "moatads.com", "quantserve.com", "scorecardresearch.com", "turn.com",
             "acint.net", "adcolony.com", "admob.com", "applovin.com", "chartboost.com",
             "inmobi.com", "ironsrc.com", "mintegral.com", "mopub.com", "unityads.unity3d.com",
-            "vungle.com", "bet365.com", "1xbet.com", "betano.com", "blaze.com", "sportingbet.com"
+            "vungle.com", "bet365.com", "1xbet.com", "betano.com", "blaze.com", "sportingbet.com",
+            // Redes de pop-under / push / redirecionamento comuns em sites de streaming
+            "adcash.com", "a-ads.com", "ad-maven.com", "onclickads.net", "onclkds.com", "popmyads.com",
+            "hilltopads.com", "richpush.co", "pushground.com", "evadav.com", "bidvertiser.com",
+            "clickaine.com", "adspyglass.com", "tsyndicate.com", "realsrv.com", "onclicka.com",
+            "popcash.com", "adsterra.network", "profitablegatecpm.com", "highperformanceformat.com",
+            "pushnotification.com", "pushwelcome.com", "bet7.com", "stake.com", "pixbet.com"
         )
 
         /** Rótulos de host que, isolados, indicam servidor de anúncio (ex.: ads.x.com). */
@@ -380,6 +388,29 @@ class MainActivity : Activity() {
             }
 
             override fun onHideCustomView() = exitCustomView()
+
+            // Alertas, confirmações e "Deseja sair desta página?" de anúncios: descartados em silêncio.
+            override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                result?.cancel()
+                return true
+            }
+
+            override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                result?.cancel()
+                return true
+            }
+
+            override fun onJsPrompt(
+                view: WebView?, url: String?, message: String?, defaultValue: String?, result: JsPromptResult?
+            ): Boolean {
+                result?.cancel()
+                return true
+            }
+
+            override fun onJsBeforeUnload(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                result?.confirm()
+                return true
+            }
 
             override fun onPermissionRequest(request: PermissionRequest?) {
                 val resources = request?.resources ?: return
