@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Chave de assinatura fixa (vem dos segredos do GitHub no workflow). Sem ela, usa a chave de debug.
+val releaseKeystore: File? = System.getenv("FXTV_KEYSTORE_FILE")?.let { file(it) }?.takeIf { it.exists() }
+
 android {
     namespace = "cc.framextv.tv"
     compileSdk = 35
@@ -11,14 +14,31 @@ android {
         applicationId = "cc.framextv.tv"
         minSdk = 23
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.5.0"
+        versionCode = 6
+        versionName = "0.6.0"
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = System.getenv("FXTV_KEYSTORE_PASSWORD")
+                keyAlias = "framextv"
+                keyPassword = System.getenv("FXTV_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = if (releaseKeystore != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
@@ -30,7 +50,35 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    buildFeatures {
+        buildConfig = false
+    }
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/*.version",
+                "META-INF/*.kotlin_module",
+                "META-INF/androidx.*",
+                "DebugProbesKt.bin",
+                "kotlin-tooling-metadata.json"
+            )
+        }
+    }
+
+    lint {
+        // O build de CI não deve falhar por avisos de loja (o app é instalado manualmente na TV).
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
 }
 
 dependencies {
+    implementation("androidx.webkit:webkit:1.12.1")
 }

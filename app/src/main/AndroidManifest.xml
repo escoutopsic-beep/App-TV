@@ -17,7 +17,6 @@
         android:hardwareAccelerated="true"
         android:icon="@drawable/ic_framextv"
         android:label="FrameXTV"
-        android:largeHeap="true"
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
