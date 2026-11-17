@@ -1,11 +1,339 @@
 /*
- * FrameXTV TV engine — injected by MainActivity into the top frame of framextv.cc.
+ * FrameXTV TV engine.
+ *
+ * Runs in every frame (top page and embedded players):
+ *   - Player agent: finds the <video>, reads/sets subtitles, audio, quality and speed through the
+ *     player's own API (JW Player, Video.js, hls.js) or the native media element, and executes
+ *     play/pause/seek. Commands travel top -> frames with postMessage; answers go straight to the
+ *     app through window.FrameXTVBridge (available in every frame).
+ * Runs only in the top frame of framextv.cc:
+ *   - D-pad spatial navigation, focus styling, ad hiding, page scale.
+ *
  * Config arrives in window.__FXTV_CFG = { scale: 100, shield: true }.
  * Safe to inject more than once: later injections only re-apply the config.
  */
 (function () {
   'use strict';
-  if (window.top !== window) return;
+
+  var IS_TOP = window.top === window;
+  var bridge = function () { return window.FrameXTVBridge || null; };
+
+  /* ======================================================================== player agent */
+
+  var A = window.__fxtvAgent;
+  if (!A) {
+    A = window.__fxtvAgent = { id: Math.random().toString(36).slice(2, 10) };
+    setupAgent(A);
+  }
+
+  function setupAgent(A) {
+    // Capture hls.js instances (when the page loads hls.js as a global) to reach audio/quality/subs.
+    var HlsRef;
+    function patchHls(H) {
+      try {
+        if (H && H.prototype && H.prototype.attachMedia && !H.prototype.__fxPatched) {
+          var orig = H.prototype.attachMedia;
+          H.prototype.attachMedia = function (media) {
+            try { if (media) media.__fxHls = this; } catch (e) {}
+            return orig.apply(this, arguments);
+          };
+          H.prototype.__fxPatched = true;
+        }
+      } catch (e) {}
+    }
+    try {
+      Object.defineProperty(window, 'Hls', {
+        configurable: true,
+        get: function () { patchHls(HlsRef); return HlsRef; },
+        set: function (H) { HlsRef = H; patchHls(H); }
+      });
+    } catch (e) {}
+
+    function report(method, obj) {
+      var b = bridge();
+      if (b && b[method]) { try { b[method](JSON.stringify(obj)); } catch (e) {} }
+    }
+
+    function pickVideo() {
+      var d = document;
+      var fs = d.fullscreenElement || d.webkitFullscreenElement;
+      if (fs) {
+        if (fs.tagName === 'VIDEO') return fs;
+        var inFs = fs.querySelector && fs.querySelector('video');
+        if (inFs) return inFs;
+      }
+      var vs = d.querySelectorAll('video'), best = null, bestArea = 0, i, v, r, a;
+      for (i = 0; i < vs.length; i++) {
+        v = vs[i];
+        if (!v.paused && !v.ended && v.readyState > 1) return v;
+        r = v.getBoundingClientRect();
+        a = r.width * r.height;
+        if (a > bestArea) { bestArea = a; best = v; }
+      }
+      return best;
+    }
+    A.pickVideo = pickVideo;
+
+    function area(v) { var r = v.getBoundingClientRect(); return Math.round(r.width * r.height); }
+    function safePlay(v) { try { var p = v.play(); if (p && p.catch) p.catch(function () {}); } catch (e) {} }
+
+    /* ---- player APIs ---- */
+    function jwFor(v) {
+      var J = window.jwplayer;
+      if (typeof J !== 'function') return null;
+      try {
+        var p = J();
+        if (!p || typeof p.getState !== 'function') return null;
+        var c = p.getContainer && p.getContainer();
+        if (c && v && !c.contains(v)) return null;
+        return p;
+      } catch (e) { return null; }
+    }
+
+    function vjsFor(v) {
+      var V = window.videojs;
+      if (!V || typeof V.getPlayers !== 'function') return null;
+      try {
+        var ps = V.getPlayers();
+        for (var k in ps) {
+          var p = ps[k];
+          if (p && p.el && p.el() && p.el().contains(v)) return p;
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    function hlsFor(v) {
+      if (v.__fxHls) return v.__fxHls;
+      var h = window.hls;
+      if (h && h.media === v) return h;
+      return null;
+    }
+
+    function arr(list) {
+      var out = [];
+      if (!list) return out;
+      for (var i = 0; i < list.length; i++) out.push(list[i]);
+      return out;
+    }
+
+    function trackName(t, i) {
+      var n = (t && (t.label || t.name || t.language || t.lang || t.srclang)) || '';
+      return n ? String(n) : 'Faixa ' + (i + 1);
+    }
+
+    function qualityName(q, i) {
+      if (q.label) return String(q.label);
+      if (q.height) return q.height + 'p';
+      if (q.bitrate) return Math.round(q.bitrate / 1000) + ' kbps';
+      return 'Nível ' + (i + 1);
+    }
+
+    var SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+    /** Build the options menu for this frame's video. Each section remembers which API serves it. */
+    function collectSections(v) {
+      var secs = {}, jw = jwFor(v), vj = vjsFor(v), hl = hlsFor(v), list, cur, items, i;
+
+      // Subtitles
+      try {
+        if (jw && jw.getCaptionsList) {
+          list = jw.getCaptionsList() || [];
+          if (list.length > 1) {
+            cur = jw.getCurrentCaptions();
+            items = [];
+            for (i = 0; i < list.length; i++) items.push({ label: i === 0 ? 'Desligadas' : trackName(list[i], i - 1), value: i, selected: i === cur });
+            secs.sub = { src: 'jw', items: items };
+          }
+        }
+        if (!secs.sub && hl && hl.subtitleTracks && hl.subtitleTracks.length) {
+          items = [{ label: 'Desligadas', value: -1, selected: hl.subtitleTrack === -1 }];
+          for (i = 0; i < hl.subtitleTracks.length; i++) items.push({ label: trackName(hl.subtitleTracks[i], i), value: i, selected: hl.subtitleTrack === i });
+          secs.sub = { src: 'hls', items: items };
+        }
+        if (!secs.sub) {
+          var tt = vj ? arr(vj.textTracks()) : arr(v.textTracks), subs = [];
+          for (i = 0; i < tt.length; i++) if (tt[i].kind === 'subtitles' || tt[i].kind === 'captions') subs.push(i);
+          if (subs.length) {
+            var anyOn = false;
+            items = [];
+            for (i = 0; i < subs.length; i++) {
+              var on = tt[subs[i]].mode === 'showing';
+              anyOn = anyOn || on;
+              items.push({ label: trackName(tt[subs[i]], i), value: subs[i], selected: on });
+            }
+            items.unshift({ label: 'Desligadas', value: -1, selected: !anyOn });
+            secs.sub = { src: vj ? 'vjs' : 'native', items: items };
+          }
+        }
+      } catch (e) {}
+
+      // Audio
+      try {
+        if (jw && jw.getAudioTracks) {
+          list = jw.getAudioTracks() || [];
+          if (list.length > 1) {
+            cur = jw.getCurrentAudioTrack();
+            items = [];
+            for (i = 0; i < list.length; i++) items.push({ label: trackName(list[i], i), value: i, selected: i === cur });
+            secs.audio = { src: 'jw', items: items };
+          }
+        }
+        if (!secs.audio && hl && hl.audioTracks && hl.audioTracks.length > 1) {
+          items = [];
+          for (i = 0; i < hl.audioTracks.length; i++) items.push({ label: trackName(hl.audioTracks[i], i), value: i, selected: hl.audioTrack === i });
+          secs.audio = { src: 'hls', items: items };
+        }
+        if (!secs.audio) {
+          var at = vj && vj.audioTracks ? arr(vj.audioTracks()) : arr(v.audioTracks);
+          if (at.length > 1) {
+            items = [];
+            for (i = 0; i < at.length; i++) items.push({ label: trackName(at[i], i), value: i, selected: !!at[i].enabled });
+            secs.audio = { src: vj && vj.audioTracks ? 'vjs' : 'native', items: items };
+          }
+        }
+      } catch (e) {}
+
+      // Quality
+      try {
+        if (jw && jw.getQualityLevels) {
+          list = jw.getQualityLevels() || [];
+          if (list.length > 1) {
+            cur = jw.getCurrentQuality();
+            items = [];
+            for (i = 0; i < list.length; i++) items.push({ label: qualityName(list[i], i), value: i, selected: i === cur });
+            secs.quality = { src: 'jw', items: items };
+          }
+        }
+        if (!secs.quality && hl && hl.levels && hl.levels.length > 1) {
+          var auto = hl.autoLevelEnabled;
+          items = [{ label: 'Automática', value: -1, selected: auto }];
+          for (i = 0; i < hl.levels.length; i++) items.push({ label: qualityName(hl.levels[i], i), value: i, selected: !auto && hl.currentLevel === i });
+          secs.quality = { src: 'hls', items: items };
+        }
+        if (!secs.quality && vj && vj.qualityLevels) {
+          var ql = vj.qualityLevels(), n = ql ? ql.length : 0;
+          if (n > 1) {
+            var enabled = 0;
+            for (i = 0; i < n; i++) if (ql[i].enabled) enabled++;
+            items = [{ label: 'Automática', value: -1, selected: enabled === n }];
+            for (i = 0; i < n; i++) items.push({ label: qualityName(ql[i], i), value: i, selected: enabled === 1 && ql[i].enabled });
+            secs.quality = { src: 'vjs', items: items };
+          }
+        }
+      } catch (e) {}
+
+      // Speed (always available)
+      var rate = v.playbackRate || 1;
+      try { if (jw && jw.getPlaybackRate) rate = jw.getPlaybackRate(); } catch (e) {}
+      items = [];
+      for (i = 0; i < SPEEDS.length; i++) items.push({ label: (SPEEDS[i] === 1 ? 'Normal' : String(SPEEDS[i]).replace('.', ',') + 'x'), value: SPEEDS[i], selected: Math.abs(rate - SPEEDS[i]) < 0.01 });
+      secs.speed = { src: jw ? 'jw' : 'native', items: items };
+
+      return secs;
+    }
+
+    function applySetting(v, key, src, value) {
+      var jw = jwFor(v), vj = vjsFor(v), hl = hlsFor(v), i;
+      if (key === 'sub') {
+        if (src === 'jw' && jw) jw.setCurrentCaptions(value);
+        else if (src === 'hls' && hl) { hl.subtitleTrack = value; if (value >= 0) hl.subtitleDisplay = true; }
+        else {
+          var tt = src === 'vjs' && vj ? arr(vj.textTracks()) : arr(v.textTracks);
+          for (i = 0; i < tt.length; i++) {
+            if (tt[i].kind !== 'subtitles' && tt[i].kind !== 'captions') continue;
+            tt[i].mode = i === value ? 'showing' : 'disabled';
+          }
+        }
+      } else if (key === 'audio') {
+        if (src === 'jw' && jw) jw.setCurrentAudioTrack(value);
+        else if (src === 'hls' && hl) hl.audioTrack = value;
+        else {
+          var at = src === 'vjs' && vj ? arr(vj.audioTracks()) : arr(v.audioTracks);
+          for (i = 0; i < at.length; i++) at[i].enabled = i === value;
+        }
+      } else if (key === 'quality') {
+        if (src === 'jw' && jw) jw.setCurrentQuality(value);
+        else if (src === 'hls' && hl) hl.currentLevel = value;
+        else if (src === 'vjs' && vj && vj.qualityLevels) {
+          var ql = vj.qualityLevels();
+          for (i = 0; i < ql.length; i++) ql[i].enabled = value < 0 || i === value;
+        }
+      } else if (key === 'speed') {
+        if (src === 'jw' && jw && jw.setPlaybackRate) jw.setPlaybackRate(value);
+        else if (vj) vj.playbackRate(value);
+        else v.playbackRate = value;
+      }
+    }
+
+    function doCmd(cmd, val) {
+      var v = pickVideo();
+      if (!v) return { ok: false };
+      if (cmd === 'TOGGLE') { if (v.paused) safePlay(v); else v.pause(); }
+      else if (cmd === 'PLAY') safePlay(v);
+      else if (cmd === 'PAUSE') v.pause();
+      else if (cmd === 'SEEK') {
+        var dur = isFinite(v.duration) ? v.duration : Infinity;
+        v.currentTime = Math.max(0, Math.min(dur - 0.5, (v.currentTime || 0) + val));
+      }
+      return { ok: true, paused: v.paused, cur: v.currentTime || 0, dur: isFinite(v.duration) ? v.duration : -1 };
+    }
+    A.doCmd = doCmd;
+
+    /** A frame only answers for a "real" player, not for tiny previews. */
+    function mainVideo() {
+      var v = pickVideo();
+      if (!v) return null;
+      if (!IS_TOP && area(v) < 40000 && v.paused) return null;
+      return v;
+    }
+
+    function handle(msg) {
+      var v;
+      if (msg.op === 'query') {
+        v = mainVideo();
+        if (!v) return;
+        report('playerOptions', {
+          req: msg.req, frame: A.id, playing: !v.paused, area: area(v), sections: collectSections(v)
+        });
+      } else if (msg.op === 'set') {
+        if (msg.target !== A.id) return;
+        v = pickVideo();
+        if (!v) return;
+        try { applySetting(v, msg.key, msg.src, msg.value); } catch (e) {}
+      } else if (msg.op === 'cmd') {
+        v = mainVideo();
+        if (!v) return;
+        var r = doCmd(msg.cmd, msg.val);
+        r.req = msg.req;
+        report('playerState', r);
+      }
+    }
+
+    function forward(msg) {
+      for (var i = 0; i < window.frames.length; i++) {
+        try { window.frames[i].postMessage(msg, '*'); } catch (e) {}
+      }
+    }
+
+    /** Handle here and pass the message down to every child frame. */
+    A.dispatch = function (msg) {
+      msg.__fxtv = 1;
+      try { handle(msg); } catch (e) {}
+      forward(msg);
+    };
+    A.forward = function (msg) { msg.__fxtv = 1; forward(msg); };
+
+    window.addEventListener('message', function (e) {
+      var d = e.data;
+      if (!d || d.__fxtv !== 1 || e.source !== window.parent || window.parent === window) return;
+      A.dispatch(d);
+    });
+  }
+
+  if (!IS_TOP) return;
+
+  /* ======================================================================== top frame */
 
   var cfg = window.__FXTV_CFG || {};
   if (window.__fxtv) { window.__fxtv.apply(cfg); window.__fxtv.boot(); return; }
@@ -13,14 +341,9 @@
   var fx = { cfg: { scale: 100, shield: true }, fsTarget: null, lastPlaying: null, booted: false };
   window.__fxtv = fx;
 
-  var bridge = function () { return window.FrameXTVBridge || null; };
-
-  /* ---------------- CSS (light GPU profile + D-pad focus + optional ad hiding) ---------------- */
+  /* ---------------- CSS: D-pad focus + optional ad hiding (site animations left untouched) ---------------- */
   var BASE_CSS =
     'html,body{background:#08090b!important;overflow-x:hidden!important}' +
-    '*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;' +
-    'transition-duration:.001ms!important;scroll-behavior:auto!important;backdrop-filter:none!important;' +
-    '-webkit-backdrop-filter:none!important;box-shadow:none!important;text-shadow:none!important}' +
     '::-webkit-scrollbar{width:0!important;height:0!important}' +
     ':focus{outline:4px solid #d6ad55!important;outline-offset:3px!important;border-radius:6px!important}' +
     'a:focus,button:focus,[tabindex]:focus{background-color:rgba(214,173,85,.14)!important}';
@@ -220,38 +543,21 @@
     (inner || el).click();
   };
 
-  /* ---------------- Player ---------------- */
-  function pickVideo() {
-    var fs = document.fullscreenElement || document.webkitFullscreenElement;
-    if (fs) {
-      if (fs.tagName === 'VIDEO') return fs;
-      var inFs = fs.querySelector && fs.querySelector('video');
-      if (inFs) return inFs;
-    }
-    var vs = document.querySelectorAll('video'), best = null, bestArea = 0, i, v, r, a;
-    for (i = 0; i < vs.length; i++) {
-      v = vs[i];
-      if (!v.paused && !v.ended && v.readyState > 1) return v;
-      r = v.getBoundingClientRect();
-      a = r.width * r.height;
-      if (a > bestArea) { bestArea = a; best = v; }
-    }
-    return best;
-  }
+  /* ---------------- Player (top frame first, then embedded players) ---------------- */
 
-  function safePlay(v) { try { var p = v.play(); if (p && p.catch) p.catch(function () {}); } catch (e) {} }
+  /** Run a command on the top-frame video; if there is none, hand it to the embedded players. */
+  fx.cmd = function (cmd, val, req) {
+    var r = A.doCmd(cmd, val);
+    if (r.ok) return r;
+    A.forward({ op: 'cmd', cmd: cmd, val: val, req: req });
+    return { ok: false, forwarded: true };
+  };
 
-  fx.player = function (cmd, val) {
-    var v = pickVideo();
-    if (!v) return { ok: false };
-    if (cmd === 'TOGGLE') { if (v.paused) safePlay(v); else v.pause(); }
-    else if (cmd === 'PLAY') safePlay(v);
-    else if (cmd === 'PAUSE') v.pause();
-    else if (cmd === 'SEEK') {
-      var dur = isFinite(v.duration) ? v.duration : Infinity;
-      v.currentTime = Math.max(0, Math.min(dur - 0.5, (v.currentTime || 0) + val));
-    }
-    return { ok: true, paused: v.paused, cur: v.currentTime || 0, dur: isFinite(v.duration) ? v.duration : -1 };
+  /** Ask every frame for its player options; answers arrive through FrameXTVBridge.playerOptions. */
+  fx.queryPlayer = function (req) { A.dispatch({ op: 'query', req: req }); };
+
+  fx.setPlayer = function (frame, key, src, value) {
+    A.dispatch({ op: 'set', target: frame, key: key, src: src, value: value });
   };
 
   // Fullscreen needs a real user gesture: arm a target here, then the app sends a native F11
@@ -263,7 +569,7 @@
       if (exit) { try { var p = exit.call(d); if (p && p.catch) p.catch(function () {}); } catch (e) {} }
       return 'exited';
     }
-    var t = pickVideo();
+    var t = A.pickVideo();
     if (!t) {
       var frames = d.querySelectorAll('iframe'), bestArea = 40000, i, r, a;
       for (i = 0; i < frames.length; i++) {
@@ -297,6 +603,7 @@
   fx.pauseAll = function () {
     var vs = document.querySelectorAll('video'), i;
     for (i = 0; i < vs.length; i++) { try { vs[i].pause(); } catch (e) {} }
+    A.forward({ op: 'cmd', cmd: 'PAUSE', val: 0, req: 'bg' });
   };
 
   function playState() {

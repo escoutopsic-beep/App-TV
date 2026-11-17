@@ -76,6 +76,16 @@ class MainActivity : Activity() {
     private var inlineVideoPlaying = false
     private val consumedKeyDowns = HashSet<Int>()
 
+    /** Pedidos ao player que esperam resposta dos iframes (via ponte JS). */
+    private var requestSeq = 0
+    private var optionsRequestId: String? = null
+    private var optionsFocusSection: String? = null
+    private val optionsReplies = ArrayList<JSONObject>()
+    private var pendingCmdId: String? = null
+    private var pendingCmdLabel = ""
+    private var pendingCmdName = ""
+    private var pendingCmdFallback: Runnable? = null
+
     /** Lidos na thread de rede do WebView, por isso voláteis. */
     @Volatile private var shieldEnabled = true
     @Volatile private var focusKind = FOCUS_NONE
@@ -84,9 +94,11 @@ class MainActivity : Activity() {
     private val hideHudRunnable = Runnable { playerHud.visibility = View.GONE }
 
     companion object {
-        private const val APP_VERSION = "0.6.0"
+        private const val APP_VERSION = "0.7.0"
         private const val HOME_URL = "https://framextv.cc/"
-        private val ENGINE_ORIGINS = setOf("https://framextv.cc", "https://www.framextv.cc")
+        /** "*" para o agente de player também rodar nos players embutidos (iframes de outros domínios). */
+        private val ENGINE_ORIGINS = setOf("*")
+        private const val PLAYER_REPLY_WAIT_MS = 450L
 
         private const val PREFS_NAME = "framextv_tcl_prefs"
         private const val KEY_FAVORITES = "local_favorites_json"
@@ -264,6 +276,20 @@ class MainActivity : Activity() {
                 "custom" -> FOCUS_CUSTOM
                 else -> FOCUS_NONE
             }
+        }
+
+        @JavascriptInterface
+        fun playerOptions(json: String?) {
+            val obj = try { JSONObject(json ?: return) } catch (_: Exception) { return }
+            runOnUiThread {
+                if (obj.optString("req") == optionsRequestId) optionsReplies.add(obj)
+            }
+        }
+
+        @JavascriptInterface
+        fun playerState(json: String?) {
+            val obj = try { JSONObject(json ?: return) } catch (_: Exception) { return }
+            runOnUiThread { onEmbeddedPlayerState(obj) }
         }
 
         @JavascriptInterface
@@ -540,6 +566,14 @@ class MainActivity : Activity() {
                 seekFromKey(event, forward = true)
                 return true
             }
+            KeyEvent.KEYCODE_CAPTIONS -> {
+                if (first) openPlayerOptions("sub")
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_AUDIO_TRACK -> {
+                if (first) openPlayerOptions("audio")
+                return true
+            }
             KeyEvent.KEYCODE_MEDIA_REWIND -> {
                 seekFromKey(event, forward = false)
                 return true
@@ -559,7 +593,7 @@ class MainActivity : Activity() {
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (first) sendPlayerCommand("STATUS", 0, "Reprodução", 0)
+                    if (first) openPlayerOptions(null)
                     return true
                 }
             }
@@ -612,24 +646,154 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Envia um comando ao vídeo da página. Se não houver vídeo acessível (player num iframe de
-     * outro domínio), repassa a tecla original ao player como evento nativo.
+     * Envia um comando ao vídeo. Primeiro tenta o vídeo da página; se o player estiver num iframe,
+     * o comando é repassado a ele (resposta chega em [onEmbeddedPlayerState]). Se ninguém responder,
+     * a tecla original vai ao player como evento nativo.
      */
     private fun sendPlayerCommand(cmd: String, value: Int, label: String, fallbackKey: Int) {
-        webView.evaluateJavascript("window.__fxtv?window.__fxtv.player('$cmd',$value):null") { raw ->
+        val req = "c" + (++requestSeq)
+        webView.evaluateJavascript("window.__fxtv?window.__fxtv.cmd('$cmd',$value,'$req'):null") { raw ->
             val res = parseJs(raw) as? JSONObject
             if (res != null && res.optBoolean("ok", false)) {
-                val paused = res.optBoolean("paused", false)
-                val title = when (cmd) {
-                    "TOGGLE", "PLAY", "PAUSE", "STATUS" -> if (paused) "Pausado" else "Reproduzindo"
-                    else -> label
-                }
-                showPlayerHud(title, res.optDouble("cur", -1.0), res.optDouble("dur", -1.0))
-            } else {
-                if (fallbackKey != 0) sendNativeKey(customView ?: webView, fallbackKey)
-                showPlayerHud(label)
+                showCommandHud(cmd, label, res)
+                return@evaluateJavascript
             }
+            cancelPendingCommand()
+            pendingCmdId = req
+            pendingCmdLabel = label
+            pendingCmdName = cmd
+            val fallback = Runnable {
+                if (pendingCmdId == req) {
+                    pendingCmdId = null
+                    if (fallbackKey != 0) sendNativeKey(customView ?: webView, fallbackKey)
+                    showPlayerHud(label)
+                }
+            }
+            pendingCmdFallback = fallback
+            uiHandler.postDelayed(fallback, PLAYER_REPLY_WAIT_MS)
         }
+    }
+
+    private fun cancelPendingCommand() {
+        pendingCmdFallback?.let { uiHandler.removeCallbacks(it) }
+        pendingCmdFallback = null
+        pendingCmdId = null
+    }
+
+    private fun onEmbeddedPlayerState(state: JSONObject) {
+        val req = state.optString("req")
+        if (req.isEmpty() || req != pendingCmdId) return
+        val name = pendingCmdName
+        val label = pendingCmdLabel
+        cancelPendingCommand()
+        if (state.optBoolean("ok", false)) showCommandHud(name, label, state)
+    }
+
+    private fun showCommandHud(cmd: String, label: String, res: JSONObject) {
+        val paused = res.optBoolean("paused", false)
+        val title = when (cmd) {
+            "TOGGLE", "PLAY", "PAUSE", "STATUS" -> if (paused) "Pausado" else "Reproduzindo"
+            else -> label
+        }
+        showPlayerHud(title, res.optDouble("cur", -1.0), res.optDouble("dur", -1.0))
+    }
+
+    // ------------------------------------------------------------------ opções do player
+
+    private fun sectionTitle(key: String): String = when (key) {
+        "sub" -> "Legendas"
+        "audio" -> "Áudio"
+        "quality" -> "Qualidade"
+        "speed" -> "Velocidade"
+        else -> key
+    }
+
+    /** Pergunta a todos os frames (página e players embutidos) quais opções o vídeo oferece. */
+    private fun openPlayerOptions(focusSection: String?) {
+        val req = "o" + (++requestSeq)
+        optionsRequestId = req
+        optionsFocusSection = focusSection
+        optionsReplies.clear()
+        webView.evaluateJavascript("window.__fxtv&&window.__fxtv.queryPlayer('$req')", null)
+        uiHandler.postDelayed({ finishOptionsQuery(req) }, PLAYER_REPLY_WAIT_MS)
+    }
+
+    private fun finishOptionsQuery(req: String) {
+        if (optionsRequestId != req) return
+        optionsRequestId = null
+        val best = optionsReplies.maxWithOrNull(
+            compareBy<JSONObject>({ it.optBoolean("playing") }, { it.optLong("area") })
+        )
+        optionsReplies.clear()
+        if (best == null) {
+            Toast.makeText(this, "Nenhum vídeo encontrado nesta página.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        showPlayerOptionsDialog(best, optionsFocusSection)
+    }
+
+    private fun showPlayerOptionsDialog(reply: JSONObject, focusSection: String?) {
+        val sections = reply.optJSONObject("sections") ?: return
+        val order = listOf("sub", "audio", "quality", "speed")
+
+        if (focusSection != null) {
+            val sec = sections.optJSONObject(focusSection)
+            if (sec != null) {
+                showSectionDialog(reply, focusSection, sec)
+                return
+            }
+            Toast.makeText(this, "Este vídeo não oferece ${sectionTitle(focusSection).lowercase()}.", Toast.LENGTH_SHORT).show()
+        }
+
+        val labels = order.map { key ->
+            val sec = sections.optJSONObject(key)
+            if (sec == null) "${sectionTitle(key)}: não disponível neste vídeo"
+            else "${sectionTitle(key)}: ${selectedLabel(sec)}"
+        }
+        dialogBuilder()
+            .setTitle("Opções do player")
+            .setItems(labels.toTypedArray()) { _, index ->
+                val key = order[index]
+                val sec = sections.optJSONObject(key)
+                if (sec == null) {
+                    Toast.makeText(this, "O player deste vídeo não oferece essa opção.", Toast.LENGTH_SHORT).show()
+                } else {
+                    showSectionDialog(reply, key, sec)
+                }
+            }
+            .setNegativeButton("Fechar", null)
+            .show()
+    }
+
+    private fun selectedLabel(sec: JSONObject): String {
+        val items = sec.optJSONArray("items") ?: return "-"
+        for (i in 0 until items.length()) {
+            val item = items.optJSONObject(i) ?: continue
+            if (item.optBoolean("selected")) return item.optString("label")
+        }
+        return "-"
+    }
+
+    private fun showSectionDialog(reply: JSONObject, key: String, sec: JSONObject) {
+        val frame = reply.optString("frame")
+        val src = sec.optString("src")
+        val items = sec.optJSONArray("items") ?: return
+        val labels = Array(items.length()) { items.optJSONObject(it)?.optString("label") ?: "" }
+        var checked = -1
+        for (i in 0 until items.length()) if (items.optJSONObject(i)?.optBoolean("selected") == true) checked = i
+
+        dialogBuilder()
+            .setTitle(sectionTitle(key))
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                dialog.dismiss()
+                val value = items.optJSONObject(which)?.opt("value") ?: return@setSingleChoiceItems
+                webView.evaluateJavascript(
+                    "window.__fxtv&&window.__fxtv.setPlayer('$frame','$key','$src',$value)", null
+                )
+                showPlayerHud("${sectionTitle(key)}: ${labels[which]}")
+            }
+            .setNegativeButton("Voltar") { _, _ -> showPlayerOptionsDialog(reply, null) }
+            .show()
     }
 
     private fun sendNativeKey(target: View, keyCode: Int) {
@@ -715,7 +879,7 @@ class MainActivity : Activity() {
         val hints = TextView(this).apply {
             setTextColor(Color.rgb(190, 195, 205))
             textSize = 14f
-            text = "OK: play/pausa  •  ◀ ▶: -15s / +15s (segure: 30s)  •  ▲: tela cheia  •  VOLTAR: sair"
+            text = "OK: play/pausa  •  ◀ ▶: -15s / +15s  •  ▲: tela cheia  •  ▼: legendas, áudio, qualidade  •  VOLTAR: sair"
         }
 
         playerHud.addView(topRow)
@@ -782,6 +946,7 @@ class MainActivity : Activity() {
     private fun showAppMenu() {
         val playerLabel = if (isPlayerModeActive) "Voltar à navegação do catálogo" else "Controlar o player (D-pad)"
         val options = arrayOf(
+            "Opções do player (legendas, áudio, qualidade)",
             playerLabel,
             "Vídeo em tela cheia",
             "Início (FrameXTV)",
@@ -795,17 +960,18 @@ class MainActivity : Activity() {
             .setTitle("FrameXTV TV Pro $APP_VERSION")
             .setItems(options) { _, index ->
                 when (index) {
-                    0 -> togglePlayerControlMode()
-                    1 -> toggleFullscreen()
-                    2 -> {
+                    0 -> openPlayerOptions(null)
+                    1 -> togglePlayerControlMode()
+                    2 -> toggleFullscreen()
+                    3 -> {
                         isPlayerModeActive = false
                         webView.loadUrl(HOME_URL)
                     }
-                    3 -> saveCurrentPageToFavorites()
-                    4 -> showFavoritesDialog()
-                    5 -> showSettingsDialog()
-                    6 -> webView.reload()
-                    7 -> {
+                    4 -> saveCurrentPageToFavorites()
+                    5 -> showFavoritesDialog()
+                    6 -> showSettingsDialog()
+                    7 -> webView.reload()
+                    8 -> {
                         webView.clearCache(true)
                         Toast.makeText(this, "Cache limpo.", Toast.LENGTH_SHORT).show()
                     }
