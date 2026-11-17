@@ -17,6 +17,7 @@
         android:hardwareAccelerated="true"
         android:icon="@drawable/ic_framextv"
         android:label="FrameXTV"
+        android:largeHeap="true"
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
@@ -25,6 +26,7 @@
             android:name=".MainActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
             android:exported="true"
+            android:hardwareAccelerated="true"
             android:launchMode="singleTask"
             android:screenOrientation="landscape">
             <intent-filter>

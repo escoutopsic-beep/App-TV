@@ -1,10 +1,8 @@
-# FrameXTV para TCL Google TV / Android TV (v0.3.0)
+# FrameXTV TV Pro para TCL Google TV (v0.5.0)
 
-Cliente leve para televisores TCL (P635/P735, 2 GB RAM, 4K/60 Hz).
+Otimizado para televisores TCL P635/P735 (2 GB RAM, 4K/60 Hz).
 
-## Como gerar o APK no GitHub
-
-1. Crie um repositório no GitHub.
-2. Envie todos os ficheiros desta pasta para a branch `main`.
-3. Aceda ao separador **Actions** no repositório do GitHub.
-4. Abra o workflow **Build FrameXTV TCL APK** e descarregue o artefacto **`FrameXTV-TCL-debug-apk`**.
+## Melhorias v0.5.0
+- **Navegação D-pad Direta (Sem Ponteiro):** Motor espacial instantâneo entre cartões com foco dourado `#D6AD55`, rolagem automática e resposta imediata.
+- **Controlador Dedicado de Player TV (HUD OSD):** No vídeo (ecrã inteiro ou modo player via botão `INFO` / `MENU`), use `OK` para Play/Pausa, `◀ / ▶` para recuar/avançar 15s (30s se segurar) e `▲` para Ecrã Inteiro, com barra de progresso nativa da TV.
+- **Escudo Rigoroso Anti-Spam, Ads e Terceiros:** Bloqueia cookies de terceiros, redes de anúncios, pop-ups (`window.open`), redirects externos e overlays intrusivos antes de consumirem RAM ou CPU.
