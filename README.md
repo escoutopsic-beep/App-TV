@@ -1,4 +1,4 @@
-# FrameXTV TV Pro para TCL Google TV (v0.7.0)
+# FrameXTV TV Pro para TCL Google TV (v0.7.1)
 
 Cliente leve do FrameXTV para TVs TCL / Google TV (2 GB de RAM, 4K/60 Hz).
 
@@ -24,6 +24,12 @@ favoritos. Sem eles, o APK sai com chave temporária e é preciso desinstalar an
 - **Escala da página** (100/90/80/75/67%): encolhe a página inteira mantendo o layout responsivo.
 - **Tamanho do texto** (90/100/110/125%).
 - **Bloqueio de anúncios e rastreadores**, **tela sempre ligada** e **abrir na última página**.
+
+## Novidades da v0.7.1 (fluidez)
+- Segurar o direcional não acumula mais movimentos: o foco para assim que a tecla é solta.
+- Navegação mais leve em catálogos grandes (visibilidade só é checada nos melhores candidatos).
+- Removidas regras de CSS de anúncios caras para a TV; o bloqueio continua na rede.
+- Motor JS não é mais reenviado a cada página; página com prioridade de processamento; sem checagem extra do Navegação Segura.
 
 ## Novidades da v0.7.0
 - Opções do player pelo controle: legendas, áudio, qualidade e velocidade (JW Player, Video.js, hls.js e vídeo nativo).

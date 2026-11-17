@@ -11,6 +11,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -75,6 +76,7 @@ class MainActivity : Activity() {
     private var isPlayerModeActive = false
     private var inlineVideoPlaying = false
     private val consumedKeyDowns = HashSet<Int>()
+    private var moveInFlight = false
 
     /** Pedidos ao player que esperam resposta dos iframes (via ponte JS). */
     private var requestSeq = 0
@@ -94,7 +96,7 @@ class MainActivity : Activity() {
     private val hideHudRunnable = Runnable { playerHud.visibility = View.GONE }
 
     companion object {
-        private const val APP_VERSION = "0.7.0"
+        private const val APP_VERSION = "0.7.1"
         private const val HOME_URL = "https://framextv.cc/"
         /** "*" para o agente de player também rodar nos players embutidos (iframes de outros domínios). */
         private val ENGINE_ORIGINS = setOf("*")
@@ -311,6 +313,13 @@ class MainActivity : Activity() {
         wv.isHorizontalScrollBarEnabled = false
         wv.overScrollMode = View.OVER_SCROLL_NEVER
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Página em primeiro plano tem prioridade de CPU/memória; o app só navega no FrameXTV,
+            // então a checagem extra do Navegação Segura em cada página é custo sem benefício.
+            wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
+            wv.settings.safeBrowsingEnabled = false
+        }
+
         wv.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -402,6 +411,7 @@ class MainActivity : Activity() {
                 super.onPageStarted(view, url, favicon)
                 mainFrameFailed = false
                 focusKind = FOCUS_NONE
+                moveInFlight = false
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -481,10 +491,18 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Fallback e reforço: garante o motor e aplica a configuração atual na página aberta. */
+    /**
+     * Garante o motor na página aberta. Se o script de início já o instalou (caso normal), só
+     * reaplica a configuração; o código completo só é reenviado quando falta.
+     */
     private fun injectEngine(target: WebView) {
         if (engineSource.isEmpty()) return
-        target.evaluateJavascript(engineConfigJs() + engineSource, null)
+        val cfg = engineConfigJs()
+        target.evaluateJavascript(
+            cfg + "window.__fxtv?(window.__fxtv.apply(window.__FXTV_CFG),window.__fxtv.boot(),true):false"
+        ) { present ->
+            if (present != "true") target.evaluateJavascript(cfg + engineSource, null)
+        }
     }
 
     private fun refreshEngineConfig() {
@@ -603,11 +621,11 @@ class MainActivity : Activity() {
         // Navegação do catálogo.
         val kind = focusKind
         return when (code) {
-            KeyEvent.KEYCODE_DPAD_UP -> { moveFocus("UP"); true }
-            KeyEvent.KEYCODE_DPAD_DOWN -> { moveFocus("DOWN"); true }
+            KeyEvent.KEYCODE_DPAD_UP -> { moveFocus("UP", !first); true }
+            KeyEvent.KEYCODE_DPAD_DOWN -> { moveFocus("DOWN", !first); true }
             // Em campo de texto, ◀ ▶ movem o cursor (nativo).
-            KeyEvent.KEYCODE_DPAD_LEFT -> if (kind == FOCUS_TEXT) false else { moveFocus("LEFT"); true }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> if (kind == FOCUS_TEXT) false else { moveFocus("RIGHT"); true }
+            KeyEvent.KEYCODE_DPAD_LEFT -> if (kind == FOCUS_TEXT) false else { moveFocus("LEFT", !first); true }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> if (kind == FOCUS_TEXT) false else { moveFocus("RIGHT", !first); true }
             // Links, botões, campos e players recebem o OK nativo (gesto real: abre teclado, seletor, play).
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                 if (kind == FOCUS_CUSTOM) {
@@ -621,8 +639,14 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun moveFocus(dir: String) {
-        webView.evaluateJavascript("window.__fxtv&&window.__fxtv.move('$dir')", null)
+    /**
+     * Ao segurar o direcional, só envia o próximo passo quando o anterior terminou: o foco
+     * acompanha o dedo e para assim que a tecla é solta (sem fila de movimentos atrasados).
+     */
+    private fun moveFocus(dir: String, isRepeat: Boolean) {
+        if (isRepeat && moveInFlight) return
+        moveInFlight = true
+        webView.evaluateJavascript("window.__fxtv&&window.__fxtv.move('$dir')") { moveInFlight = false }
     }
 
     private fun seekFromKey(event: KeyEvent, forward: Boolean) {

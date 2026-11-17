@@ -341,20 +341,12 @@
   var fx = { cfg: { scale: 100, shield: true }, fsTarget: null, lastPlaying: null, booted: false };
   window.__fxtv = fx;
 
-  /* ---------------- CSS: D-pad focus + optional ad hiding (site animations left untouched) ---------------- */
+  /* ---------------- CSS: D-pad focus only (site animations left untouched; ads are cut at the network) ---------------- */
   var BASE_CSS =
     'html,body{background:#08090b!important;overflow-x:hidden!important}' +
     '::-webkit-scrollbar{width:0!important;height:0!important}' +
     ':focus{outline:4px solid #d6ad55!important;outline-offset:3px!important;border-radius:6px!important}' +
     'a:focus,button:focus,[tabindex]:focus{background-color:rgba(214,173,85,.14)!important}';
-
-  var SHIELD_CSS =
-    '[id^="ad-"],[id^="ads-"],[id^="ad_"],[id*="-ad-"],[id*="_ad_"],' +
-    '[class^="ad-"],[class*=" ad-"],[class~="ad"],[class~="ads"],[class*="adsbox"],[class*="ad-banner"],' +
-    'ins.adsbygoogle,[class*="adsbygoogle"],[class*="overlay-ad"],[class*="promo-modal"],' +
-    '[class*="sponsor"],[id*="sponsor"],' +
-    'iframe[src*="doubleclick"],iframe[src*="/ads/"],iframe[src*="adserver"],iframe[src*="popads"]' +
-    '{display:none!important}';
 
   function applyStyle() {
     var host = document.head || document.documentElement;
@@ -365,7 +357,7 @@
       st.id = 'fxtv-style';
       host.appendChild(st);
     }
-    var css = BASE_CSS + (fx.cfg.shield ? SHIELD_CSS : '');
+    var css = BASE_CSS;
     if (st.textContent !== css) st.textContent = css;
     return true;
   }
@@ -430,23 +422,13 @@
     if (root.tagName === 'A' && root.getAttribute('target') === '_blank') root.removeAttribute('target');
   }
 
-  function isVisible(el, r) {
-    if (r.width < 4 || r.height < 4) return false;
-    if (el.checkVisibility && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
-    return true;
+  function usable(el) {
+    return !el.disabled && (el.tabIndex >= 0 || el.tagName === 'IFRAME');
   }
 
-  function focusables() {
-    var all = document.querySelectorAll(NAV_SEL), out = [], i, el, r;
-    for (i = 0; i < all.length; i++) {
-      el = all[i];
-      if (el.disabled) continue;
-      if (el.tabIndex < 0 && el.tagName !== 'IFRAME') continue;
-      r = el.getBoundingClientRect();
-      if (!isVisible(el, r)) continue;
-      out.push({ el: el, r: r });
-    }
-    return out;
+  /** Style-based visibility is costly, so it is only checked for the few best candidates. */
+  function styleVisible(el) {
+    return !el.checkVisibility || el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
   }
 
   /* ---------------- Focus kind -> native side (decides who handles OK / arrows) ---------------- */
@@ -476,8 +458,13 @@
     var r = el.getBoundingClientRect(), vh = window.innerHeight, vw = window.innerWidth;
     var m = Math.min(120, vh * 0.15);
     if (r.top < m || r.bottom > vh - m || r.left < 0 || r.right > vw) {
-      el.scrollIntoView({ block: r.height > vh - 2 * m ? 'start' : 'center', inline: 'nearest' });
+      el.scrollIntoView({ block: r.height > vh - 2 * m ? 'start' : 'center', inline: 'nearest', behavior: 'instant' });
     }
+  }
+
+  function scrollPage(dir) {
+    if (dir === 'DOWN') window.scrollBy({ top: 320, behavior: 'instant' });
+    if (dir === 'UP') window.scrollBy({ top: -320, behavior: 'instant' });
   }
 
   function focusEl(el) {
@@ -504,35 +491,42 @@
     return primary + (overlap > 0 ? ortho * 0.3 : ortho * 2 + 150);
   }
 
-  function firstInView(list) {
-    var vh = window.innerHeight, i;
-    for (i = 0; i < list.length; i++) if (list[i].r.top >= 0 && list[i].r.top < vh) return list[i].el;
-    return list.length ? list[0].el : null;
+  /** Focus the first usable element visible on screen. */
+  function focusFirstInView() {
+    var all = document.querySelectorAll(NAV_SEL), vh = window.innerHeight, i, el, r;
+    for (i = 0; i < all.length; i++) {
+      el = all[i];
+      if (!usable(el)) continue;
+      r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4 || r.top < 0 || r.top >= vh) continue;
+      if (styleVisible(el)) { focusEl(el); return true; }
+    }
+    return false;
   }
 
   fx.move = function (dir) {
-    var list = focusables();
-    if (!list.length) {
-      if (dir === 'DOWN') window.scrollBy(0, 320);
-      if (dir === 'UP') window.scrollBy(0, -320);
-      return false;
-    }
-    var active = document.activeElement, cur = null, i;
+    var active = document.activeElement, cur = null, i, el, r, sc;
     if (active && active !== document.body && active !== document.documentElement) {
       cur = active.getBoundingClientRect();
       if (cur.width < 1 && cur.height < 1) cur = null;
     }
-    if (!cur) { var f = firstInView(list); if (f) focusEl(f); return true; }
+    if (!cur) { if (!focusFirstInView()) scrollPage(dir); return true; }
 
-    var best = null, bestScore = Infinity, s;
-    for (i = 0; i < list.length; i++) {
-      if (list[i].el === active) continue;
-      s = score(dir, cur, list[i].r);
-      if (s >= 0 && s < bestScore) { bestScore = s; best = list[i].el; }
+    // Geometry first (cheap), style check only on the best few.
+    var all = document.querySelectorAll(NAV_SEL), cands = [];
+    for (i = 0; i < all.length; i++) {
+      el = all[i];
+      if (el === active || !usable(el)) continue;
+      r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4) continue;
+      sc = score(dir, cur, r);
+      if (sc >= 0) cands.push({ s: sc, el: el });
     }
-    if (best) { focusEl(best); return true; }
-    if (dir === 'DOWN') window.scrollBy(0, 320);
-    if (dir === 'UP') window.scrollBy(0, -320);
+    cands.sort(function (a, b) { return a.s - b.s; });
+    for (i = 0; i < cands.length && i < 12; i++) {
+      if (styleVisible(cands[i].el)) { focusEl(cands[i].el); return true; }
+    }
+    scrollPage(dir);
     return false;
   };
 
@@ -644,18 +638,17 @@
     }).observe(document.body, { childList: true, subtree: true });
 
     if (document.head) {
-      new MutationObserver(function () { applyStyle(); applyViewport(); })
-        .observe(document.head, { childList: true, subtree: true, attributes: true, attributeFilter: ['content'] });
+      new MutationObserver(function () {
+        if (!document.getElementById('fxtv-style')) applyStyle();
+        if (fx.cfg.scale < 100) applyViewport();
+      }).observe(document.head, { childList: true });
     }
 
     document.addEventListener('focusin', report, true);
     document.addEventListener('focusout', function () { setTimeout(report, 0); }, true);
     window.addEventListener('blur', function () { setTimeout(report, 0); });
 
-    if (!document.activeElement || document.activeElement === document.body) {
-      var f = firstInView(focusables());
-      if (f) focusEl(f);
-    }
+    if (!document.activeElement || document.activeElement === document.body) focusFirstInView();
     report();
     playState();
   };
